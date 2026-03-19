@@ -22,7 +22,7 @@ nemotron:
 
 memory:
   vector_db: "chromadb"
-  persist_dir: "./memory_store"
+  persist_dir: "./memory_store"  # 주의: 일부 환경에서 I/O 에러 시 /tmp/memory_store 사용
   chunk_size: 512
   chunk_overlap: 50
 
