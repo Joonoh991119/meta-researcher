@@ -63,7 +63,7 @@ def _download_file(url: str, dest: Path, timeout: int = 30) -> bool:
 
 # ─── Strategy 1: Unpaywall (Legal Open Access) ─────────────
 def try_unpaywall(doi: str, dest: Path, email: str, timeout: int = 30) -> bool:
-    """Try Unpaywall API for open access PDF."""
+    """Try Unpaywall API — iterate ALL OA locations (publisher + repository)."""
     try:
         encoded = urllib.parse.quote(doi, safe="")
         r = requests.get(
@@ -72,13 +72,52 @@ def try_unpaywall(doi: str, dest: Path, email: str, timeout: int = 30) -> bool:
         )
         if r.status_code != 200:
             return False
-        best = r.json().get("best_oa_location")
-        if not best:
-            return False
-        url = best.get("url_for_pdf") or best.get("url")
-        return _download_file(url, dest, timeout) if url else False
+        data = r.json()
+
+        # Try all OA locations, not just best — repositories (PMC) often
+        # succeed when publisher sites (PNAS, Royal Society) block bots
+        for loc in data.get("oa_locations", []):
+            url = loc.get("url_for_pdf") or loc.get("url")
+            if not url:
+                continue
+            if _download_file(url, dest, timeout):
+                return True
+
+        return False
     except Exception as e:
         logger.debug(f"Unpaywall failed for {doi}: {e}")
+        return False
+
+
+# ─── Strategy 1b: EuropePMC (fallback for PMC papers) ──────
+def try_europepmc(doi: str, dest: Path, timeout: int = 30) -> bool:
+    """Try EuropePMC for papers with PMCID — bypasses some bot blocks."""
+    try:
+        # Look up PMCID via EuropePMC API
+        r = requests.get(
+            f"https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+            f"?query=DOI:{doi}&format=json&resultType=core",
+            timeout=timeout,
+        )
+        if r.status_code != 200:
+            return False
+        results = r.json().get("resultList", {}).get("result", [])
+        if not results:
+            return False
+        pmcid = results[0].get("pmcid", "")
+        if not pmcid:
+            return False
+
+        # EuropePMC render endpoint (often less aggressive bot blocking)
+        pdf_url = f"https://europepmc.org/backend/ptpmcrender.fcgi?accid={pmcid}&blobtype=pdf"
+        if _download_file(pdf_url, dest, timeout):
+            return True
+
+        # Also try direct PMC PDF
+        pdf_url2 = f"https://pmc.ncbi.nlm.nih.gov/articles/{pmcid}/pdf/"
+        return _download_file(pdf_url2, dest, timeout)
+    except Exception as e:
+        logger.debug(f"EuropePMC failed for {doi}: {e}")
         return False
 
 
@@ -158,8 +197,17 @@ def _publisher_patterns(url: str) -> list[str]:
             patterns.append(
                 f"https://journals.plos.org/plosone/article/file?id={match.group(1)}&type=printable"
             )
-    if "pnas.org" in u or "academic.oup.com" in u:
+    if "pnas.org" in u:
+        # PNAS: /doi/full/10.xxx → /doi/pdf/10.xxx
+        patterns.append(url.replace("/doi/full/", "/doi/pdf/"))
+        patterns.append(url.replace("/doi/abs/", "/doi/pdf/"))
         patterns.append(url.rstrip("/") + ".full.pdf")
+    if "academic.oup.com" in u:
+        patterns.append(url.rstrip("/") + ".full.pdf")
+    if "royalsocietypublishing.org" in u:
+        # Royal Society: /doi/full/10.xxx → /doi/pdf/10.xxx
+        patterns.append(url.replace("/doi/full/", "/doi/pdf/"))
+        patterns.append(url.replace("/doi/abs/", "/doi/pdf/"))
     if "frontiersin.org" in u or "mdpi.com" in u:
         patterns.append(url.rstrip("/") + "/pdf")
 
@@ -226,12 +274,13 @@ def download_pdf(
     dest = download_dir / safe_name
 
     if strategies is None:
-        strategies = ["unpaywall", "scihub", "publisher"]
+        strategies = ["unpaywall", "europepmc", "scihub", "publisher"]
     if scihub_mirrors is None:
-        scihub_mirrors = ["https://sci-hub.se", "https://sci-hub.st", "https://sci-hub.ru"]
+        scihub_mirrors = ["https://sci-hub.kr", "https://sci-hub.se", "https://sci-hub.st", "https://sci-hub.ru"]
 
     strategy_map = {
         "unpaywall": lambda: try_unpaywall(doi, dest, email, timeout),
+        "europepmc": lambda: try_europepmc(doi, dest, timeout),
         "scihub": lambda: try_scihub(doi, dest, scihub_mirrors, timeout),
         "publisher": lambda: try_direct_publisher(doi, dest, timeout),
     }
