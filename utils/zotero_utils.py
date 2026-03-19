@@ -250,13 +250,21 @@ class ZoteroAPIBackend(ZoteroBackend):
 
         success = result.get("successful", {})
         if success:
-            key = list(success.values())[0]["key"]
-            return key
+            first = list(success.values())[0]
+            key = first.get("key") or first.get("data", {}).get("key")
+            if key:
+                return key
 
         failed = result.get("failed", {})
         if failed:
             err = list(failed.values())[0]
-            raise RuntimeError(f"Failed to add item: {err}")
+            msg = err.get("message", str(err)) if isinstance(err, dict) else str(err)
+            # Retry as journalArticle if item type caused the failure
+            if meta.item_type != "journalArticle":
+                logger.warning(f"Retrying as journalArticle (was {meta.item_type}): {msg}")
+                meta.item_type = "journalArticle"
+                return self.add_item(meta, collection_key)
+            raise RuntimeError(f"Failed to add item: {msg}")
         raise RuntimeError(f"Unexpected response: {result}")
 
     def attach_pdf(self, item_key: str, pdf_path: Path) -> str:
