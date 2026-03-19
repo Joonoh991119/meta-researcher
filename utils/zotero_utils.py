@@ -386,10 +386,12 @@ class ZoteroSQLiteBackend(ZoteroBackend):
             self.conn.close()
             self.conn = None
 
+    # Zotero valid key characters (excludes 0, 1, L, O to avoid ambiguity)
+    _KEY_CHARS = "23456789ABCDEFGHIJKMNPQRSTUVWXZ"
+
     def _gen_key(self) -> str:
-        chars = string.ascii_uppercase + string.digits
         while True:
-            k = "".join(random.choices(chars, k=8))
+            k = "".join(random.choices(self._KEY_CHARS, k=8))
             if k not in self._keys:
                 self._keys.add(k)
                 return k
